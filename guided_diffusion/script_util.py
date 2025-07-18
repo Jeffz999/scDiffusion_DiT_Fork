@@ -4,6 +4,8 @@ import inspect
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .cell_model import Cell_classifier, Cell_Unet
+from dit.transformer import DiT
+from dit.diffusion import DiffusionGene
 
 NUM_CLASSES = 11
 
@@ -49,12 +51,16 @@ def classifier_and_diffusion_defaults():
     res.update(diffusion_defaults())
     return res
 
-
+#TODO: utilize newer diffusion process
+IN_CHANNELS=1
+USE_POS_EMBS=False
 def create_model_and_diffusion(
     input_dim,
     hidden_dim,
-    class_cond,
-    learn_sigma,
+    patch_size,
+    depth,
+    num_heads,
+    learn_sigma: bool,
     diffusion_steps,
     noise_schedule,
     timestep_respacing,
@@ -62,37 +68,32 @@ def create_model_and_diffusion(
     predict_xstart,
     rescale_timesteps,
     rescale_learned_sigmas,
-    dropout,
 ):
-    model = create_model(
-        input_dim,
-        hidden_dim,
-        dropout=dropout
-    )
-    diffusion = create_gaussian_diffusion(
-        steps=diffusion_steps,
+    model = DiT(
+        depth=depth,
+        input_size=input_dim,
+        patch_size=patch_size,
+        in_channels=IN_CHANNELS,
+        hidden_size=hidden_dim,
+        num_heads=num_heads,
         learn_sigma=learn_sigma,
-        noise_schedule=noise_schedule,
-        use_kl=use_kl,
-        predict_xstart=predict_xstart,
-        rescale_timesteps=rescale_timesteps,
-        rescale_learned_sigmas=rescale_learned_sigmas,
-        timestep_respacing=timestep_respacing,
+        use_pos_embs=False
     )
+    diffusion = DiffusionGene()
     return model, diffusion
 
 
-def create_model(
-    input_dim,
-    hidden_dim,
-    dropout,
-):
+# def create_model(
+#     input_dim,
+#     hidden_dim,
+#     dropout,
+# ):
 
-    return Cell_Unet(
-        input_dim,
-        hidden_dim,
-        dropout=dropout
-    )
+#     return Cell_Unet(
+#         input_dim,
+#         hidden_dim,
+#         dropout=dropout
+#     )
 
 
 def create_classifier_and_diffusion(
