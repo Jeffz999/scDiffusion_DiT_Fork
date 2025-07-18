@@ -13,8 +13,6 @@ from diffusion import DiffusionGene
 from copy import deepcopy
 from collections import OrderedDict
 
-#TODO: check it out https://arxiv.org/html/2502.02448v1#S3
-
 # Run this file to train your model.
 # Change training parameters in settings.py.
 use_amp = True

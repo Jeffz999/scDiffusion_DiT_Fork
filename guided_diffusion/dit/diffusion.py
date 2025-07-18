@@ -13,6 +13,7 @@ class DiffusionGene:
         device="cuda", 
         num_channels=1,
         num_train_timesteps=1000,
+        beta_scheduler: str = "linear"
         ):
         
         self.gene_size = gene_size
@@ -32,13 +33,13 @@ class DiffusionGene:
         self.scheduler = UniPCMultistepScheduler(
             beta_start=0.0001,
             beta_end=0.02,
-            beta_schedule="linear",
+            beta_schedule=beta_scheduler,
             num_train_timesteps=num_train_timesteps,
             prediction_type="epsilon",
             trained_betas=None,
             thresholding=True,
             sample_max_value=15,
-            solver_order=3            
+            solver_order=2            
         )
         
         # self.scheduler = DDIMScheduler(

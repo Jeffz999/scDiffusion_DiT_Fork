@@ -1,0 +1,181 @@
+import os
+import torch
+import torch.nn as nn
+from torch import optim
+from collections import OrderedDict
+from copy import deepcopy
+import time
+
+from accelerate import Accelerator
+from accelerate.utils import set_seed
+
+from . import logger
+from .resample import create_named_schedule_sampler, UniformSampler
+
+@torch.no_grad()
+def update_ema(ema_model: nn.Module, model: nn.Module, decay=0.999):
+    """
+    Step the EMA model towards the current model.
+
+    Args:
+        ema_model (nn.Module): The Exponential Moving Average model.
+        model (nn.Module): The current training model.
+        decay (float): The decay rate for the EMA.
+    """
+    ema_params = OrderedDict(ema_model.named_parameters())
+    model_params = OrderedDict(model.named_parameters())
+
+    for name, param in model_params.items():
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+
+SCHEDULER_MIN_MULTIPLIER = 1e-2
+
+class TrainLoop:
+    def __init__(
+        self,
+        *,
+        model,
+        diffusion,
+        data,
+        batch_size,
+        lr,
+        ema_rate=0.9999,
+        log_interval,
+        save_interval,
+        resume_checkpoint,
+        mixed_precision_type:str ="bf16",
+        schedule_sampler=None,
+        weight_decay=0.0,
+        lr_anneal_epochs=500,
+        model_name,
+        save_dir,
+    ):
+        # Initialize Accelerator
+        self.accelerator = Accelerator(mixed_precision=mixed_precision_type)
+        self.device = self.accelerator.device
+
+        self.model = model
+        self.diffusion = diffusion
+        self.data = data
+        self.batch_size = batch_size
+        self.lr = lr
+        self.ema_rate = ema_rate
+        self.log_interval = log_interval
+        self.save_interval = save_interval
+        self.resume_checkpoint = resume_checkpoint
+        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        self.weight_decay = weight_decay
+        self.lr_anneal_epochs = lr_anneal_epochs
+        self.model_name = model_name
+        self.save_dir = save_dir
+
+        self.step = 0
+        
+        # Setup optimizer and scheduler
+        self.opt = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        
+        # Using CosineAnnealingLR from dit/train.py
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.opt, T_max=self.lr_anneal_epochs, eta_min=self.lr * SCHEDULER_MIN_MULTIPLIER
+        )
+
+        # Prepare everything with Accelerate
+        self.model, self.opt, self.data, self.scheduler = self.accelerator.prepare(
+            self.model, self.opt, self.data, self.scheduler
+        )
+
+        # Create and prepare EMA model
+        self.ema_model = deepcopy(self.model).to(self.device)
+        for p in self.ema_model.parameters():
+            p.requires_grad = False
+        self.ema_model.eval()
+
+        self.timestamp = model_name
+        self.checkpoint_dir = os.path.join(self.save_dir, self.timestamp)
+
+        if self.resume_checkpoint:
+            logger.log(f"Resuming from checkpoint: {self.resume_checkpoint}")
+            self.accelerator.load_state(self.resume_checkpoint)
+            # Manually load EMA model state
+            ema_path = os.path.join(self.resume_checkpoint, "ema_model.pt")
+            if os.path.exists(ema_path):
+                self.ema_model.load_state_dict(
+                    torch.load(ema_path, map_location=self.device)
+                )
+                logger.log(f"Loaded EMA model from {ema_path}")
+            # The step will be loaded by accelerator, but we need to track it
+            # This part might need adjustment based on how you track epochs/steps
+            # For simplicity, we'll assume the scheduler's last_epoch gives us a hint
+            self.start_epoch = self.scheduler.last_epoch
+        else:
+            self.start_epoch = 0
+
+    def run_loop(self):
+        logger.log("Starting training loop...")
+        for epoch in range(self.start_epoch, self.lr_anneal_epochs):
+            logger.log(f"Starting epoch {epoch}:")
+            for i, (batch, cond) in enumerate(self.data):
+                self.run_step(batch, cond)
+                if self.step % self.log_interval == 0:
+                    self.log_step()
+                
+                self.step += 1
+
+            self.scheduler.step()
+            
+            if self.accelerator.is_main_process and (epoch + 1) % self.save_interval == 0:
+                self.save(epoch)
+
+        logger.log("Training finished.")
+        if self.accelerator.is_main_process:
+            self.save("final")
+
+    def run_step(self, batch, cond):
+        self.model.train()
+        self.opt.zero_grad()
+        
+        # Using the simplified loss calculation from dit/train.py
+        t = self.diffusion.sample_timesteps(batch.shape[0])
+        x_t, noise = self.diffusion.noise_genes(batch, t)
+        
+        with self.accelerator.autocast():
+            predicted_noise = self.model(x_t, t)
+            loss = nn.functional.mse_loss(noise, predicted_noise)
+
+        self.accelerator.backward(loss)
+        self.opt.step()
+
+        # Update EMA model
+        update_ema(self.ema_model, self.accelerator.unwrap_model(self.model), decay=self.ema_rate)
+
+        # Log loss
+        self.accelerator.log({"loss": loss.item()}, step=self.step)
+
+
+    def log_step(self):
+        # Logging is handled by accelerator.log, but we can add more here if needed
+        if self.accelerator.is_main_process:
+            logger.logkv("step", self.step)
+            logger.logkv("lr", self.scheduler.get_last_lr()[0])
+            logger.dumpkvs()
+
+    def save(self, epoch_label):
+        """
+        Saves a checkpoint using Accelerate and also saves the EMA model.
+        """
+        if self.accelerator.is_main_process:
+            save_dir = os.path.join(self.checkpoint_dir, f"epoch_{epoch_label}")
+            os.makedirs(save_dir, exist_ok=True)
+            
+            logger.log(f"Saving checkpoint for epoch: {epoch_label} to {save_dir}...")
+            
+            # Use accelerator to save the main model, optimizer, and scheduler
+            self.accelerator.save_state(save_dir)
+            
+            # Manually save the EMA model's state dictionary
+            ema_model_path = os.path.join(save_dir, "ema_model.pt")
+            unwrapped_ema_model = self.ema_model
+            torch.save(unwrapped_ema_model.state_dict(), ema_model_path)
+            
+            logger.log(f"Checkpoint saved to {save_dir}")
+

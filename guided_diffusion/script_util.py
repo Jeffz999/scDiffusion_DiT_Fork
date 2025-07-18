@@ -1,6 +1,8 @@
 import argparse
 import inspect
+from typing import Tuple, Union
 
+import torch.nn as nn
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .cell_model import Cell_classifier, Cell_Unet
@@ -9,7 +11,7 @@ from dit.diffusion import DiffusionGene
 
 NUM_CLASSES = 11
 
-
+# TODO: update defaults
 def diffusion_defaults():
     """
     Defaults for image and classifier training.
@@ -25,16 +27,21 @@ def diffusion_defaults():
         rescale_learned_sigmas=False,
         class_cond=False,
     )
-
-
+    
+    
+IN_CHANNELS=1
+USE_POS_EMBS=False
 def model_and_diffusion_defaults():
     """
     Defaults for image training.
     """
     res = dict(
         input_dim = 128,
-        hidden_dim = [512,512,256,128],
-        dropout = 0.0
+        hidden_dim = 768,
+        patch_size = 5,
+        IN_CHANNELS=IN_CHANNELS,
+        num_heads = 12,
+        use_pos_embs=False
     )
     res.update(diffusion_defaults())
     return res
@@ -51,24 +58,23 @@ def classifier_and_diffusion_defaults():
     res.update(diffusion_defaults())
     return res
 
-#TODO: utilize newer diffusion process
-IN_CHANNELS=1
-USE_POS_EMBS=False
+
 def create_model_and_diffusion(
-    input_dim,
-    hidden_dim,
-    patch_size,
-    depth,
-    num_heads,
+    # DiT Model Arguments
+    input_dim: int,
+    hidden_dim: int,
+    patch_size: int,
+    depth: int,
+    num_heads: int,
     learn_sigma: bool,
-    diffusion_steps,
-    noise_schedule,
-    timestep_respacing,
-    use_kl,
-    predict_xstart,
-    rescale_timesteps,
-    rescale_learned_sigmas,
-):
+    
+    # DiffusionGene/UniPC Scheduler Arguments
+    diffusion_steps: int,
+    noise_schedule: str = "linear",
+    prediction_type: str = "epsilon",
+    beta_start: float = 0.0001,
+    beta_end: float = 0.02,
+) -> Tuple[nn.Module, DiffusionGene]:
     model = DiT(
         depth=depth,
         input_size=input_dim,
@@ -79,7 +85,13 @@ def create_model_and_diffusion(
         learn_sigma=learn_sigma,
         use_pos_embs=False
     )
-    diffusion = DiffusionGene()
+    diffusion = DiffusionGene(
+        beta_scheduler=noise_schedule,
+        num_train_timesteps=diffusion_steps,
+        beta_start=beta_start,
+        beta_end=beta_end,
+        prediction_type=prediction_type,
+    )
     return model, diffusion
 
 
