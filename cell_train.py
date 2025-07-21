@@ -80,7 +80,8 @@ def create_argparser():
         fp16_scale_growth=1e-3,
         vae_path = 'output/Autoencoder_checkpoint/muris_AE/model_seed=0_step=0.pt',
         model_name="muris_diffusion",
-        save_dir='output/diffusion_checkpoint'
+        save_dir='output/diffusion_checkpoint',
+        snr_gamma=5.0 #SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0."
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

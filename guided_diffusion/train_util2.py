@@ -1,6 +1,7 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import optim
 from collections import OrderedDict
 from copy import deepcopy
@@ -11,6 +12,10 @@ from accelerate.utils import set_seed
 
 from . import logger
 from .resample import create_named_schedule_sampler, UniformSampler
+
+from .hf_code.training_utils import compute_snr
+
+from .dit.diffusion import DiffusionGene
 
 @torch.no_grad()
 def update_ema(ema_model: nn.Module, model: nn.Module, decay=0.999):
@@ -35,7 +40,7 @@ class TrainLoop:
         self,
         *,
         model,
-        diffusion,
+        diffusion: DiffusionGene,
         data,
         batch_size,
         lr,
@@ -44,10 +49,10 @@ class TrainLoop:
         save_interval,
         resume_checkpoint,
         mixed_precision_type:str ="bf16",
-        schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_epochs=500,
         model_name,
+        snr_gamma=5.0,
         save_dir,
     ):
         # Initialize Accelerator
@@ -63,12 +68,12 @@ class TrainLoop:
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.resume_checkpoint = resume_checkpoint
-        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        self.schedule_sampler = diffusion.scheduler
         self.weight_decay = weight_decay
         self.lr_anneal_epochs = lr_anneal_epochs
         self.model_name = model_name
         self.save_dir = save_dir
-
+        self.snr_gamma = snr_gamma
         self.step = 0
         
         # Setup optimizer and scheduler
@@ -138,9 +143,34 @@ class TrainLoop:
         t = self.diffusion.sample_timesteps(batch.shape[0])
         x_t, noise = self.diffusion.noise_genes(batch, t)
         
+        scheduler_pred_type = self.schedule_sampler.config.prediction_type
+        # ------------------ V-Prediction Target Calculation ------------------ #
+        # Calculate the appropriate target for the loss function based on the prediction type.
+        if scheduler_pred_type == "epsilon":
+            target = noise
+        elif scheduler_pred_type == "v_prediction":
+            target = self.diffusion.get_velocity(batch, noise, t)
+        else:
+            raise ValueError(f"Unknown prediction type {scheduler_pred_type}")
+        
         with self.accelerator.autocast():
             predicted_noise = self.model(x_t, t)
-            loss = nn.functional.mse_loss(noise, predicted_noise)
+            if self.snr_gamma is None:
+                # Use standard MSE loss if snr_gamma is not provided
+                loss = F.mse_loss(target, predicted_noise)
+            else:
+                snr = compute_snr(self.schedule_sampler, t)
+                mse_loss_weights = torch.stack([snr, self.snr_gamma * torch.ones_like(t)], dim=1).min(
+                    dim=1
+                )[0]
+                if scheduler_pred_type == "epsilon":
+                    mse_loss_weights = mse_loss_weights / snr
+                elif scheduler_pred_type == "v_prediction":
+                    mse_loss_weights = mse_loss_weights / (snr + 1)
+
+                loss = F.mse_loss(predicted_noise, target, reduction="none")
+                loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+                loss = loss.mean()
 
         self.accelerator.backward(loss)
         self.opt.step()
