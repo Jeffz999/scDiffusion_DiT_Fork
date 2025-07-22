@@ -13,7 +13,7 @@ from guided_diffusion.script_util import (
     args_to_dict,
     add_dict_to_argparser,
 )
-from guided_diffusion.train_util import TrainLoop
+from guided_diffusion.train_util2 import TrainLoop
 
 import torch
 import numpy as np

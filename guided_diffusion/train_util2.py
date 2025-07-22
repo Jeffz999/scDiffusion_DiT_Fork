@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from torch import optim
 from collections import OrderedDict
 from copy import deepcopy
@@ -11,11 +12,11 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 
 from . import logger
-from .resample import create_named_schedule_sampler, UniformSampler
 
 from .hf_code.training_utils import compute_snr
 
 from .dit.diffusion import DiffusionGene
+from .dit.transformer import DiT
 
 @torch.no_grad()
 def update_ema(ema_model: nn.Module, model: nn.Module, decay=0.999):
@@ -39,9 +40,9 @@ class TrainLoop:
     def __init__(
         self,
         *,
-        model,
+        model: DiT,
         diffusion: DiffusionGene,
-        data,
+        data: DataLoader,
         batch_size,
         lr,
         ema_rate=0.9999,
@@ -54,14 +55,15 @@ class TrainLoop:
         model_name,
         snr_gamma=5.0,
         save_dir,
+        cfg = 1.0
     ):
         # Initialize Accelerator
         self.accelerator = Accelerator(mixed_precision=mixed_precision_type)
         self.device = self.accelerator.device
 
-        self.model = model
+        self.model: DiT = model
         self.diffusion = diffusion
-        self.data = data
+        self.data: DataLoader = data
         self.batch_size = batch_size
         self.lr = lr
         self.ema_rate = ema_rate
@@ -75,12 +77,13 @@ class TrainLoop:
         self.save_dir = save_dir
         self.snr_gamma = snr_gamma
         self.step = 0
+        self.cfg = cfg
         
         # Setup optimizer and scheduler
-        self.opt = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        self.opt: torch.optim.Optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         
         # Using CosineAnnealingLR from dit/train.py
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        self.scheduler: torch.optim.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.opt, T_max=self.lr_anneal_epochs, eta_min=self.lr * SCHEDULER_MIN_MULTIPLIER
         )
 
@@ -135,7 +138,7 @@ class TrainLoop:
         if self.accelerator.is_main_process:
             self.save("final")
 
-    def run_step(self, batch, cond):
+    def run_step(self, batch, cond=None):
         self.model.train()
         self.opt.zero_grad()
         
@@ -154,7 +157,10 @@ class TrainLoop:
             raise ValueError(f"Unknown prediction type {scheduler_pred_type}")
         
         with self.accelerator.autocast():
-            predicted_noise = self.model(x_t, t)
+            if cond is None:
+                predicted_noise = self.model(x_t, t)
+            else:
+                predicted_noise = self.model.forward_with_cfg(x_t, t, cond, self.cfg)
             if self.snr_gamma is None:
                 # Use standard MSE loss if snr_gamma is not provided
                 loss = F.mse_loss(target, predicted_noise)

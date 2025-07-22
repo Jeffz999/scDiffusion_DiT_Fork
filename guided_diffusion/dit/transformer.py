@@ -89,6 +89,34 @@ class TimestepEmbedder(nn.Module):
         t_emb = self.mlp(t_freq)
         return t_emb
 
+class LabelEmbedder(nn.Module):
+    """
+    Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
+    """
+    def __init__(self, num_classes, hidden_size, dropout_prob):
+        super().__init__()
+        use_cfg_embedding = dropout_prob > 0
+        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
+        self.num_classes = num_classes
+        self.dropout_prob = dropout_prob
+
+    def token_drop(self, labels, force_drop_ids=None):
+        """
+        Drops labels to enable classifier-free guidance.
+        """
+        if force_drop_ids is None:
+            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+        else:
+            drop_ids = force_drop_ids == 1
+        labels = torch.where(drop_ids, self.num_classes, labels)
+        return labels
+
+    def forward(self, labels, train, force_drop_ids=None):
+        use_dropout = self.dropout_prob > 0
+        if (train and use_dropout) or (force_drop_ids is not None):
+            labels = self.token_drop(labels, force_drop_ids)
+        embeddings = self.embedding_table(labels)
+        return embeddings
 
 class PatchEmbed(nn.Module):
     """
@@ -256,7 +284,9 @@ class DiT(nn.Module):
         num_heads=8,
         mlp_ratio=4.0,
         learn_sigma=False,
-        use_pos_embs=True
+        use_pos_embs=True,
+        class_dropout_prob=0.1,
+        num_classes=1000,
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -268,6 +298,7 @@ class DiT(nn.Module):
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
@@ -332,17 +363,24 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, l_p * p))
         return imgs
 
-    def forward(self, x, t):
+    def forward(self, x, t, y=None):
         """
         Forward pass of DiT.
         x: (N, C, L) tensor of 1D inputs
         t: (N,) tensor of diffusion timesteps
+        y: (N,) tensor of class labels
         """
         if self.use_pos_embs:
             x = self.x_embedder(x) + self.pos_embed
         else:
             x = self.x_embedder(x)
-        c = self.t_embedder(t)
+            
+        t = self.t_embedder(t)                   # (N, D)
+        if y is not None:
+            y = self.y_embedder(y, self.training)    # (N, D)
+            c = t + y                                # (N, D)
+        else:
+            c = t
 
         # --- NEW: Log conditioning vector norm ---
         if self.log_stats and self.writer:

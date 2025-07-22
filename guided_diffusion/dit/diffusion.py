@@ -94,8 +94,9 @@ class DiffusionGene:
         return x.cpu()
     
     def get_velocity(self, sample: torch.Tensor, noise: torch.Tensor, timesteps: torch.IntTensor) -> torch.Tensor:
+        # adapted from https://github.com/huggingface/diffusers/blob/v0.34.0/src/diffusers/schedulers/scheduling_ddpm.py#L129
         # Make sure alphas_cumprod and timestep have same device and dtype as sample
-        alphas_cumprod = self.schedule_sampler.alphas_cumprod.to(sample.device)
+        alphas_cumprod = self.scheduler.alphas_cumprod.to(sample.device)
         timesteps = timesteps.to(sample.device)
 
         sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
