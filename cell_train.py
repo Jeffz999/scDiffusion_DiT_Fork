@@ -20,18 +20,18 @@ import numpy as np
 import random
 
 def main():
+    """
+    Main training function.
+    """
     setup_seed(1234)
     args = create_argparser().parse_args()
 
-    dist_util.setup_dist()
-    logger.configure(dir='../output/logs/'+args.model_name)  # log file
+    logger.configure(dir='../output/logs/' + args.model_name)
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    model.to(dist_util.dev())
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("creating data loader...")
     data = load_data(
@@ -47,49 +47,49 @@ def main():
         diffusion=diffusion,
         data=data,
         batch_size=args.batch_size,
-        microbatch=args.microbatch,
         lr=args.lr,
         ema_rate=args.ema_rate,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         resume_checkpoint=args.resume_checkpoint,
-        use_fp16=args.use_fp16,
-        fp16_scale_growth=args.fp16_scale_growth,
-        schedule_sampler=schedule_sampler,
+        mixed_precision_type=args.mixed_precision_type,
         weight_decay=args.weight_decay,
-        lr_anneal_steps=args.lr_anneal_steps,
+        lr_anneal_epochs=args.lr_anneal_epochs,
         model_name=args.model_name,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        snr_gamma=args.snr_gamma,
     ).run_loop()
 
 
 def create_argparser():
+    """
+    Creates the argument parser for the training script.
+    """
     defaults = dict(
-        data_dir="/data1/lep/Workspace/guided-diffusion/data/tabula_muris/all.h5ad",
-        schedule_sampler="uniform",
+        data_dir="./data",
         lr=1e-4,
         weight_decay=0.0001,
-        lr_anneal_steps=500000,
+        lr_anneal_epochs=1200,
         batch_size=128,
-        microbatch=-1,  # -1 disables microbatches
-        ema_rate="0.9999",  # comma-separated list of EMA values
+        ema_rate=0.9999,
         log_interval=100,
-        save_interval=200000,
+        save_interval=200,
         resume_checkpoint="",
-        use_fp16=False,
-        fp16_scale_growth=1e-3,
-        vae_path = 'output/Autoencoder_checkpoint/muris_AE/model_seed=0_step=0.pt',
+        mixed_precision_type="bf16",
+        vae_path='output/Autoencoder_checkpoint/muris_AE/model_seed=0_step=0.pt',
         model_name="muris_diffusion",
         save_dir='output/diffusion_checkpoint',
-        snr_gamma=5.0 #SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0."
+        snr_gamma=5.0,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser
 
-
 def setup_seed(seed):
+    """
+    Sets the random seed for reproducibility.
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
@@ -98,3 +98,4 @@ def setup_seed(seed):
 
 if __name__ == "__main__":
     main()
+

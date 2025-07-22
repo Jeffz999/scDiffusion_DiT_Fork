@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import logging
 from diffusers import DPMSolverMultistepScheduler, DDIMScheduler, PNDMScheduler, UniPCMultistepScheduler
-
+from transformer import DiT
 logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s", level=logging.INFO, datefmt="%I:%M:%S")
 
 
@@ -65,7 +65,7 @@ class DiffusionGene:
         """Generate random timesteps for training."""
         return torch.randint(low=0, high=self.scheduler.config.num_train_timesteps, size=(n,), device=self.device)
 
-    def sample(self, model, n: int, num_inference_steps: int = 25, clamp: bool = True, eta=1.0):
+    def sample(self, model: DiT, n: int, num_inference_steps: int = 25, cfg_scale = 1.0, y = None, clamp: bool = False, eta=1.0):
         """
         Modern sampling method using the diffusers scheduler, now for multi-channel data.
         """
@@ -82,7 +82,11 @@ class DiffusionGene:
         with torch.no_grad():
             for t in tqdm(self.scheduler.timesteps, desc="Sampling"):
                 timestep_batch = torch.full((n,), t, device=self.device, dtype=torch.long)
-                predicted_noise = model(x, timestep_batch)
+                # Use CFG if scale is greater than 1.0
+                if cfg_scale > 1.0:
+                    predicted_noise = self.model.forward_with_cfg(x, timestep_batch, y=y, cfg_scale=cfg_scale)
+                else:
+                    predicted_noise = self.model(x, timestep_batch, y=y)
                 #x = self.scheduler.step(predicted_noise, t, x, eta=eta).prev_sample
                 x = self.scheduler.step(predicted_noise, t, x).prev_sample
         
@@ -117,7 +121,6 @@ if __name__ == '__main__':
     # Test code.
     # --- MODIFIED: Test with 2 channels ---
     diffusion = DiffusionGene(num_channels=2)
-    from transformer import DiT
     model = DiT(depth=3, patch_size=10, in_channels=2).to('cuda')
 
     logging.info("Testing corrected sample method for 2 channels...")

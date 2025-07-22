@@ -55,7 +55,6 @@ class TrainLoop:
         model_name,
         snr_gamma=5.0,
         save_dir,
-        cfg = 1.0
     ):
         # Initialize Accelerator
         self.accelerator = Accelerator(mixed_precision=mixed_precision_type)
@@ -77,7 +76,6 @@ class TrainLoop:
         self.save_dir = save_dir
         self.snr_gamma = snr_gamma
         self.step = 0
-        self.cfg = cfg
         
         # Setup optimizer and scheduler
         self.opt: torch.optim.Optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -160,7 +158,7 @@ class TrainLoop:
             if cond is None:
                 predicted_noise = self.model(x_t, t)
             else:
-                predicted_noise = self.model.forward_with_cfg(x_t, t, cond, self.cfg)
+                predicted_noise = self.model(x_t, t, cond)
             if self.snr_gamma is None:
                 # Use standard MSE loss if snr_gamma is not provided
                 loss = F.mse_loss(target, predicted_noise)
