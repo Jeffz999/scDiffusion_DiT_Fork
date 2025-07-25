@@ -134,7 +134,7 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x):
-        B, C, L = x.shape
+        B, L = x.shape
         assert L == self.img_size[0], f"Input length ({L}) doesn't match model ({self.img_size[0]})."
         x = self.proj(x)
         x = x.transpose(1, 2)  # [B, C, L] -> [B, L, C]

@@ -13,7 +13,6 @@ import random
 import argparse
 
 # --- Project Imports ---
-from loader import cell_dataloader
 from diffusion import DiffusionGene
 from transformer import DiT
 from settings import args

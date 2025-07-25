@@ -13,7 +13,7 @@ from accelerate.utils import set_seed
 
 from . import logger
 
-from .hf_code.training_utils import compute_snr
+from diffusers.training_utils import compute_snr
 
 from .dit.diffusion import DiffusionGene
 from .dit.transformer import DiT
@@ -121,7 +121,7 @@ class TrainLoop:
         for epoch in range(self.start_epoch, self.lr_anneal_epochs):
             logger.log(f"Starting epoch {epoch}:")
             for i, (batch, cond) in enumerate(self.data):
-                self.run_step(batch, cond)
+                self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]
                 if self.step % self.log_interval == 0:
                     self.log_step()
                 
@@ -159,6 +159,8 @@ class TrainLoop:
                 predicted_noise = self.model(x_t, t)
             else:
                 predicted_noise = self.model(x_t, t, cond)
+                
+            # code from https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
             if self.snr_gamma is None:
                 # Use standard MSE loss if snr_gamma is not provided
                 loss = F.mse_loss(target, predicted_noise)

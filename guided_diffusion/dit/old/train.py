@@ -7,7 +7,6 @@ from settings import args
 from typing import List
 import logging
 from torch.utils.tensorboard import SummaryWriter
-from loader import cell_dataloader
 from torch.utils.data import DataLoader
 from diffusion import DiffusionGene
 from copy import deepcopy

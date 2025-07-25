@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import logging
 from diffusers import DPMSolverMultistepScheduler, DDIMScheduler, PNDMScheduler, UniPCMultistepScheduler
-from transformer import DiT
+from .transformer import DiT
 logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s", level=logging.INFO, datefmt="%I:%M:%S")
 
 

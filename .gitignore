@@ -4,3 +4,16 @@ VAE/cache
 output/*
 
 data/
+
+
+model_v1.1.tar.gz
+model_v1.1
+
+annotation_model_v1.tar.gz
+annotation_model_v1
+
+job_output.txt
+
+job.slurm
+
+train.sh

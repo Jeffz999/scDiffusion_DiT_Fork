@@ -6,8 +6,8 @@ import torch.nn as nn
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .cell_model import Cell_classifier, Cell_Unet
-from dit.transformer import DiT
-from dit.diffusion import DiffusionGene
+from .dit.transformer import DiT
+from .dit.diffusion import DiffusionGene
 
 NUM_CLASSES = 11
 
@@ -35,12 +35,12 @@ def model_and_diffusion_defaults():
     res = dict(
         #dit
         input_size=128,
-        patch_size=2,
-        in_channels=1,
         hidden_size=768,
+        patch_size=2,
         depth=16,
         num_heads=12,
         mlp_ratio=4.0,
+        in_channels=1,  
         learn_sigma=False,
         use_pos_embs=False,
         class_dropout_prob=0.1,
@@ -60,8 +60,8 @@ def model_and_diffusion_defaults():
 
 def create_model_and_diffusion(
     # DiT Model Arguments
-    input_dim: int,
-    hidden_dim: int,
+    input_size: int,
+    hidden_size: int,
     patch_size: int,
     depth: int,
     num_heads: int,
@@ -73,8 +73,8 @@ def create_model_and_diffusion(
     num_classes: int,
 
     # DiffusionGene/Scheduler Arguments
-    diffusion_steps: int,
-    noise_schedule: str,
+    num_train_timesteps: int,
+    beta_scheduler: str,
     prediction_type: str,
     beta_start: float,
     beta_end: float,
@@ -84,10 +84,10 @@ def create_model_and_diffusion(
     Creates a DiT model and a DiffusionGene process.
     """
     model = DiT(
-        input_size=input_dim,
+        input_size=input_size,
         patch_size=patch_size,
         in_channels=in_channels,
-        hidden_size=hidden_dim,
+        hidden_size=hidden_size,
         depth=depth,
         num_heads=num_heads,
         mlp_ratio=mlp_ratio,
@@ -97,10 +97,10 @@ def create_model_and_diffusion(
         num_classes=num_classes,
     )
     diffusion = DiffusionGene(
-        gene_size=input_dim,
+        gene_size=input_size,
         num_channels=in_channels,
-        num_train_timesteps=diffusion_steps,
-        beta_scheduler=noise_schedule,
+        num_train_timesteps=num_train_timesteps,
+        beta_scheduler=beta_scheduler,
         prediction_type=prediction_type,
         beta_start=beta_start,
         beta_end=beta_end,

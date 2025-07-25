@@ -4,9 +4,8 @@ Train a diffusion model on images.
 
 import argparse
 
-from guided_diffusion import dist_util, logger
+from guided_diffusion import logger
 from guided_diffusion.cell_datasets_loader import load_data
-from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
     create_model_and_diffusion,
@@ -32,6 +31,9 @@ def main():
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
+    
+    logger.log(f"Num parameters in model: {sum(p.numel() for p in model.parameters())}")
+
 
     logger.log("creating data loader...")
     data = load_data(
@@ -66,7 +68,7 @@ def create_argparser():
     Creates the argument parser for the training script.
     """
     defaults = dict(
-        data_dir="./data",
+        data_dir="data/tabula_muris/all.h5ad",
         lr=1e-4,
         weight_decay=0.0001,
         lr_anneal_epochs=1200,
@@ -76,7 +78,7 @@ def create_argparser():
         save_interval=200,
         resume_checkpoint="",
         mixed_precision_type="bf16",
-        vae_path='output/Autoencoder_checkpoint/muris_AE/model_seed=0_step=0.pt',
+        vae_path='output/AE_checkpoint/muris_AE/model_seed=0_step=199999.pt',
         model_name="muris_diffusion",
         save_dir='output/diffusion_checkpoint',
         snr_gamma=5.0,
