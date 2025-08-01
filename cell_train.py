@@ -75,7 +75,7 @@ def create_argparser():
         lr_anneal_epochs=1200,
         batch_size=128,
         ema_rate=0.9999,
-        log_interval=50,
+        log_interval=25,
         save_interval_epochs=200,
         resume_checkpoint="",
         mixed_precision_type="bf16",

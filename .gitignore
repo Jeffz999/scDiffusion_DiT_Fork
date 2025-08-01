@@ -14,6 +14,6 @@ annotation_model_v1
 
 job_output.txt
 
-job.slurm
+*.slurm
 
 train.sh

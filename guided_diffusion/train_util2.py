@@ -142,6 +142,8 @@ class TrainLoop:
                 step_loss = self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]              
                 total_epoch_loss += step_loss
                 
+                progress_bar.set_postfix(mse=f"{step_loss:.4f}")
+
                 self.step += 1
                 
             self.scheduler.step()
