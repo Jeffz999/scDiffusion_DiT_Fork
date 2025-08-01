@@ -134,7 +134,15 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x):
-        B, L = x.shape
+        """create patches from genes
+
+        Args:
+            x (tensor): gene tensor in shape [Batch, Channel, Length]
+
+        Returns:
+            Tensor: Patches in shape [Batch, Patches, embedding dim]
+        """
+        B, C, L = x.shape
         assert L == self.img_size[0], f"Input length ({L}) doesn't match model ({self.img_size[0]})."
         x = self.proj(x)
         x = x.transpose(1, 2)  # [B, C, L] -> [B, L, C]

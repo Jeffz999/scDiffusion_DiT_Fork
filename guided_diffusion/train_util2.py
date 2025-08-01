@@ -35,7 +35,8 @@ def update_ema(ema_model: nn.Module, model: nn.Module, decay=0.999):
         ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
 
 SCHEDULER_MIN_MULTIPLIER = 1e-2
-
+#TODO: https://github.com/huggingface/diffusers/blob/aa73072f1f7014635e3de916cbcf47858f4c37a0/examples/text_to_image/train_text_to_image.py
+#prob have to manual cast with acceleate
 class TrainLoop:
     def __init__(
         self,
@@ -120,17 +121,17 @@ class TrainLoop:
         logger.log("Starting training loop...")
         for epoch in range(self.start_epoch, self.lr_anneal_epochs):
             logger.log(f"Starting epoch {epoch}:")
-            for i, (batch, cond) in enumerate(self.data):
+            for i, (batch, cond) in enumerate(self.data):   
                 self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]
                 if self.step % self.log_interval == 0:
                     self.log_step()
                 
                 self.step += 1
 
-            self.scheduler.step()
+                self.scheduler.step()
             
-            if self.accelerator.is_main_process and (epoch + 1) % self.save_interval == 0:
-                self.save(epoch)
+                if self.accelerator.is_main_process and (epoch + 1) % self.save_interval == 0:
+                    self.save(epoch)
 
         logger.log("Training finished.")
         if self.accelerator.is_main_process:
@@ -140,8 +141,23 @@ class TrainLoop:
         self.model.train()
         self.opt.zero_grad()
         
+
+        # Determine the target dtype from the accelerator's configuration
+        if self.accelerator.mixed_precision == "fp16":
+            weight_dtype = torch.float16
+        elif self.accelerator.mixed_precision == "bf16":
+            weight_dtype = torch.bfloat16
+        else:
+            weight_dtype = torch.float32
+
+        # Cast the input batch to the correct dtype for mixed precision
+        batch = batch.to(self.accelerator.device, dtype=weight_dtype)
+        # Add a channel dimension to the batch for model compat reasons
+        batch = batch.unsqueeze(1)
+        
         # Using the simplified loss calculation from dit/train.py
         t = self.diffusion.sample_timesteps(batch.shape[0])
+
         x_t, noise = self.diffusion.noise_genes(batch, t)
         
         scheduler_pred_type = self.schedule_sampler.config.prediction_type
@@ -154,29 +170,35 @@ class TrainLoop:
         else:
             raise ValueError(f"Unknown prediction type {scheduler_pred_type}")
         
-        with self.accelerator.autocast():
-            if cond is None:
-                predicted_noise = self.model(x_t, t)
-            else:
-                predicted_noise = self.model(x_t, t, cond)
-                
-            # code from https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
-            if self.snr_gamma is None:
-                # Use standard MSE loss if snr_gamma is not provided
-                loss = F.mse_loss(target, predicted_noise)
-            else:
-                snr = compute_snr(self.schedule_sampler, t)
-                mse_loss_weights = torch.stack([snr, self.snr_gamma * torch.ones_like(t)], dim=1).min(
-                    dim=1
-                )[0]
-                if scheduler_pred_type == "epsilon":
-                    mse_loss_weights = mse_loss_weights / snr
-                elif scheduler_pred_type == "v_prediction":
-                    mse_loss_weights = mse_loss_weights / (snr + 1)
+        y = cond.get("y")
+        if y is not None:
+            y = y.to(self.accelerator.device)
+        
+        if cond is None:
+            predicted_noise = self.model(x_t, t)
+        else:
+            predicted_noise = self.model(x_t, t, y) 
 
-                loss = F.mse_loss(predicted_noise, target, reduction="none")
-                loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-                loss = loss.mean()
+        # code from https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
+        if self.snr_gamma is None:
+            # Use standard MSE loss if snr_gamma is not provided
+            loss = F.mse_loss(target, predicted_noise)
+        else:
+            # Compute loss-weights as per Section 3.4 of https://huggingface.co/papers/2303.09556.
+            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+            # This is discussed in Section 4.2 of the same paper.
+            snr = compute_snr(self.schedule_sampler, t)
+            mse_loss_weights = torch.stack([snr, self.snr_gamma * torch.ones_like(t)], dim=1).min(
+                dim=1
+            )[0]
+            if scheduler_pred_type == "epsilon":
+                mse_loss_weights = mse_loss_weights / snr
+            elif scheduler_pred_type == "v_prediction":
+                mse_loss_weights = mse_loss_weights / (snr + 1)
+
+            loss = F.mse_loss(predicted_noise, target, reduction="none")
+            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+            loss = loss.mean()
 
         self.accelerator.backward(loss)
         self.opt.step()

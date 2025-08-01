@@ -9,7 +9,7 @@ import torch as th
 import torch.distributed as dist
 import random
 
-from guided_diffusion import dist_util, logger
+from guided_diffusion import logger
 from guided_diffusion.script_util import (   
     NUM_CLASSES,
     model_and_diffusion_defaults,
@@ -23,7 +23,7 @@ def save_data(all_cells, traj, data_dir):
     cell_gen = all_cells
     np.savez(data_dir, cell_gen=cell_gen)
     return
-
+#TODO: add in own model/ema loading code
 def main():
     setup_seed(1234)
     args = create_argparser().parse_args()
@@ -42,27 +42,15 @@ def main():
     model.eval()
 
     logger.log("sampling...")
-    all_cells = []
-    while len(all_cells) * args.batch_size < args.num_samples:
-        model_kwargs = {}
-        sample_fn = (
-            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-        )
-        sample, traj = sample_fn(
-            model,
-            (args.batch_size, args.input_dim), 
-            clip_denoised=args.clip_denoised,
-            model_kwargs=model_kwargs,
-            start_time=diffusion.betas.shape[0],
-        )
-
-        gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
-        dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
-        all_cells.extend([sample.cpu().numpy() for sample in gathered_samples])
-        logger.log(f"created {len(all_cells) * args.batch_size} samples")
-
-    arr = np.concatenate(all_cells, axis=0)
-    save_data(arr, traj, args.sample_dir)
+    generated_samples = diffusion.sample(
+        model,
+        n=args.num_samples,
+        num_inference_steps=args.num_inference_steps
+    )
+    
+    # The output has a channel dimension, so we squeeze it out before saving.
+    arr = generated_samples.squeeze(1).cpu().numpy()
+    save_data(arr, None, args.sample_dir)
 
     dist.barrier()
     logger.log("sampling complete")
