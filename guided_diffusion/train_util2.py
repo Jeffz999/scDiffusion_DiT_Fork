@@ -7,16 +7,17 @@ from torch import optim
 from collections import OrderedDict
 from copy import deepcopy
 import time
-
+import logging
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-
-from . import logger
+from tqdm.auto import tqdm
 
 from diffusers.training_utils import compute_snr
 
 from .dit.diffusion import DiffusionGene
 from .dit.transformer import DiT
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @torch.no_grad()
 def update_ema(ema_model: nn.Module, model: nn.Module, decay=0.999):
@@ -58,8 +59,14 @@ class TrainLoop:
         save_dir,
     ):
         # Initialize Accelerator
-        self.accelerator = Accelerator(mixed_precision=mixed_precision_type)
+        self.accelerator = Accelerator(mixed_precision=mixed_precision_type, log_with="tensorboard", project_dir=os.path.join(save_dir, "tb_logs"))
         self.device = self.accelerator.device
+
+        # Ensure TensorBoard log directory exists
+        if self.accelerator.is_main_process:
+            if not os.path.exists(self.accelerator.logging_dir):
+                os.makedirs(self.accelerator.logging_dir)
+            self.accelerator.init_trackers(model_name)
 
         self.model: DiT = model
         self.diffusion = diffusion
@@ -101,7 +108,7 @@ class TrainLoop:
         self.checkpoint_dir = os.path.join(self.save_dir, self.timestamp)
 
         if self.resume_checkpoint:
-            logger.log(f"Resuming from checkpoint: {self.resume_checkpoint}")
+            logging.info(f"Resuming from checkpoint: {self.resume_checkpoint}")
             self.accelerator.load_state(self.resume_checkpoint)
             # Manually load EMA model state
             ema_path = os.path.join(self.resume_checkpoint, "ema_model.pt")
@@ -109,7 +116,7 @@ class TrainLoop:
                 self.ema_model.load_state_dict(
                     torch.load(ema_path, map_location=self.device)
                 )
-                logger.log(f"Loaded EMA model from {ema_path}")
+                logging.info(f"Loaded EMA model from {ema_path}")
             # The step will be loaded by accelerator, but we need to track it
             # This part might need adjustment based on how you track epochs/steps
             # For simplicity, we'll assume the scheduler's last_epoch gives us a hint
@@ -118,10 +125,10 @@ class TrainLoop:
             self.start_epoch = 0
 
     def run_loop(self):
-        logger.log("Starting training loop...")
+        logging.info("Starting training loop...")
         for epoch in range(self.start_epoch, self.lr_anneal_epochs):
-            logger.log(f"Starting epoch {epoch}:")
-            for i, (batch, cond) in enumerate(self.data):   
+            progress_bar = tqdm(self.data, desc=f"Epoch {epoch}", disable=not self.accelerator.is_main_process)
+            for i, (batch, cond) in enumerate(progress_bar):   
                 self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]
                 if self.step % self.log_interval == 0:
                     self.log_step()
@@ -133,7 +140,7 @@ class TrainLoop:
                 if self.accelerator.is_main_process and (epoch + 1) % self.save_interval == 0:
                     self.save(epoch)
 
-        logger.log("Training finished.")
+        logging.info("Training finished.")
         if self.accelerator.is_main_process:
             self.save("final")
 
@@ -200,6 +207,17 @@ class TrainLoop:
             loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
             loss = loss.mean()
 
+        # Calculate and log gradient norm
+        if self.accelerator.is_main_process and self.step % self.log_interval == 0:
+            with torch.no_grad():
+                unwrapped_model = self.accelerator.unwrap_model(self.model)
+                grad_norm = 0.0
+                for p in unwrapped_model.parameters():
+                    if p.grad is not None:
+                        grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_norm = grad_norm**0.5
+                self.accelerator.log({"train/grad_norm": grad_norm, "step": self.step})
+
         self.accelerator.backward(loss)
         self.opt.step()
 
@@ -210,30 +228,25 @@ class TrainLoop:
         self.accelerator.log({"loss": loss.item()}, step=self.step)
 
 
-    def log_step(self):
-        # Logging is handled by accelerator.log, but we can add more here if needed
+    def log_step(self, loss_dict, progress_bar):
         if self.accelerator.is_main_process:
-            logger.logkv("step", self.step)
-            logger.logkv("lr", self.scheduler.get_last_lr()[0])
-            logger.dumpkvs()
+            progress_bar.set_postfix(loss_dict)
+            for k, v in loss_dict.items():
+                self.accelerator.log({f"train/{k}": v, "step": self.step, "epoch": self.scheduler.last_epoch})
+            self.accelerator.log({"train/lr": self.scheduler.get_last_lr()[0], "step": self.step})
+
 
     def save(self, epoch_label):
-        """
-        Saves a checkpoint using Accelerate and also saves the EMA model.
-        """
         if self.accelerator.is_main_process:
             save_dir = os.path.join(self.checkpoint_dir, f"epoch_{epoch_label}")
             os.makedirs(save_dir, exist_ok=True)
             
-            logger.log(f"Saving checkpoint for epoch: {epoch_label} to {save_dir}...")
+            logging.info(f"Saving checkpoint for epoch: {epoch_label} to {save_dir}...")
             
-            # Use accelerator to save the main model, optimizer, and scheduler
             self.accelerator.save_state(save_dir)
             
-            # Manually save the EMA model's state dictionary
             ema_model_path = os.path.join(save_dir, "ema_model.pt")
-            unwrapped_ema_model = self.ema_model
-            torch.save(unwrapped_ema_model.state_dict(), ema_model_path)
+            torch.save(self.ema_model.state_dict(), ema_model_path)
             
-            logger.log(f"Checkpoint saved to {save_dir}")
+            logging.info(f"Checkpoint saved to {save_dir}")
 

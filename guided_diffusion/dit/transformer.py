@@ -172,7 +172,7 @@ class Attention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=eps, elementwise_affine=True)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=eps, elementwise_affine=True)
 
-    def forward(self, x, log_stats=False, writer=None, global_step=None, prefix=""):
+    def forward(self, x):
         B, L, C = x.shape
         # 1. Project to Q, K, V
         qkv = self.qkv(x)
@@ -186,12 +186,6 @@ class Attention(nn.Module):
         # The RMSNorm is applied to the last dimension, which is `head_dim`.
         q = self.q_norm(q)
         k = self.k_norm(k)
-
-        # --- NEW: Extensive monitoring ---
-        if log_stats and writer:
-            writer.add_scalar(f'{prefix}/q_norm_val', q.norm(dim=-1).mean(), global_step)
-            writer.add_scalar(f'{prefix}/k_norm_val', k.norm(dim=-1).mean(), global_step)
-            writer.add_scalar(f'{prefix}/v_val_norm', v.norm(dim=-1).mean(), global_step)
 
         # 4. Transpose for scaled_dot_product_attention's expected input
         # (B, L, num_heads, head_dim) -> (B, num_heads, L, head_dim)
@@ -207,9 +201,6 @@ class Attention(nn.Module):
 
         # 7. Final projection
         x = self.proj(x)
-
-        if log_stats and writer:
-            writer.add_scalar(f'{prefix}/attn_output_norm', x.norm(dim=-1).mean(), global_step)
 
         return x
 
@@ -231,23 +222,13 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c, log_stats=False, writer=None, global_step=None, prefix=""):
+    def forward(self, x, c):
         # Generate modulation parameters from the conditioning signal
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
 
-        # --- NEW: Extensive monitoring for modulation parameters ---
-        if log_stats and writer:
-            with torch.no_grad():
-                writer.add_scalar(f'{prefix}/gate_msa_norm', gate_msa.norm(dim=-1).mean(), global_step)
-                writer.add_scalar(f'{prefix}/gate_mlp_norm', gate_mlp.norm(dim=-1).mean(), global_step)
-                writer.add_scalar(f'{prefix}/scale_msa_norm', scale_msa.norm(dim=-1).mean(), global_step)
-                writer.add_scalar(f'{prefix}/scale_mlp_norm', scale_mlp.norm(dim=-1).mean(), global_step)
-                writer.add_scalar(f'{prefix}/shift_msa_norm', shift_msa.norm(dim=-1).mean(), global_step)
-                writer.add_scalar(f'{prefix}/shift_mlp_norm', shift_mlp.norm(dim=-1).mean(), global_step)
-
         # Attention block with modulation
         modulated_input = modulate(self.norm1(x), shift_msa, scale_msa)
-        attn_output = self.attn(modulated_input, log_stats, writer, global_step, prefix=f"{prefix}/Attention")
+        attn_output = self.attn(modulated_input)
         x = x + gate_msa.unsqueeze(1) * attn_output
 
         # MLP block with modulation
@@ -317,11 +298,6 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
-        # --- NEW: Attributes for logging ---
-        self.log_stats = False
-        self.writer = None
-        self.global_step = 0
-
     def initialize_weights(self):
         def _basic_init(module):
             if isinstance(module, nn.Linear):
@@ -390,13 +366,8 @@ class DiT(nn.Module):
         else:
             c = t
 
-        # --- NEW: Log conditioning vector norm ---
-        if self.log_stats and self.writer:
-            with torch.no_grad():
-                self.writer.add_scalar('Stats/Cond_Norm', c.norm(dim=-1).mean(), self.global_step)
-
         for i, block in enumerate(self.blocks):
-            x = block(x, c, self.log_stats, self.writer, self.global_step, prefix=f"Stats/Block_{i}")
+            x = block(x, c)
 
         x = self.final_layer(x, c)
         x = self.unpatchify(x)
@@ -461,14 +432,6 @@ if __name__ == '__main__':
     x = torch.randn((16, 1, 2000)).to(device)
     dit = DiT(depth=24, hidden_size=768*2, patch_size=4, num_heads=24).to(device)
     
-    # --- Test new logging ---
-    from torch.utils.tensorboard import SummaryWriter
-    writer = SummaryWriter("runs/test_run")
-    dit.log_stats = True
-    dit.writer = writer
-    dit.global_step = 0
-    # --- End test ---
-
     out = dit(x, t)
     print("Output shape:", out.shape)
     
@@ -476,5 +439,4 @@ if __name__ == '__main__':
     num_params = sum(p.numel() for p in dit.parameters())
     print(f"Total parameters: {num_params:,}")
     
-    writer.close()
     print("Test complete. Check the 'runs/test_run' directory for TensorBoard logs.")
