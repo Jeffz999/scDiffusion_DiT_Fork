@@ -48,8 +48,8 @@ class TrainLoop:
         batch_size,
         lr,
         ema_rate=0.9999,
-        log_interval,
-        save_interval,
+        log_interval,  
+        save_interval_epochs,  # in epochs
         resume_checkpoint,
         mixed_precision_type:str ="bf16",
         weight_decay=0.0,
@@ -71,11 +71,18 @@ class TrainLoop:
         self.model: DiT = model
         self.diffusion = diffusion
         self.data: DataLoader = data
+
+        #Pbar breaks with original return generater method
+        if isinstance(self.data, DataLoader):
+            self.batches_in_epoch = len(self.data)
+        else:
+            self.batches_in_epoch = None
+
         self.batch_size = batch_size
         self.lr = lr
         self.ema_rate = ema_rate
         self.log_interval = log_interval
-        self.save_interval = save_interval
+        self.save_interval_epochs = save_interval_epochs
         self.resume_checkpoint = resume_checkpoint
         self.schedule_sampler = diffusion.scheduler
         self.weight_decay = weight_decay
@@ -127,22 +134,30 @@ class TrainLoop:
     def run_loop(self):
         logging.info("Starting training loop...")
         for epoch in range(self.start_epoch, self.lr_anneal_epochs):
-            progress_bar = tqdm(self.data, desc=f"Epoch {epoch}", disable=not self.accelerator.is_main_process)
+            logging.info(f"Running epoch {epoch} out of {self.lr_anneal_epochs} epochs")
+            total_epoch_loss = 0.0
+            progress_bar = tqdm(self.data, total=self.batches_in_epoch, desc=f"Epoch {epoch}", disable= not self.accelerator.is_main_process)
+
             for i, (batch, cond) in enumerate(progress_bar):   
-                self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]
-                if self.step % self.log_interval == 0:
-                    self.log_step()
+                step_loss = self.run_step(batch, cond) # ex shape batch:[bs: 128, latent:128] cond:[128]              
+                total_epoch_loss += step_loss
                 
                 self.step += 1
+                
+            self.scheduler.step()
 
-                self.scheduler.step()
-            
-                if self.accelerator.is_main_process and (epoch + 1) % self.save_interval == 0:
-                    self.save(epoch)
+            # --- NEW: Log the average loss at the end of the epoch ---
+            if self.accelerator.is_main_process:
+                avg_epoch_loss = total_epoch_loss / len(self.data)
+                
+                # Log the average epoch loss and learning rate
+                self.accelerator.log(
+                    {"epoch/epoch_loss": avg_epoch_loss, "epoch/epoch_learning_rate": self.scheduler.get_last_lr()[0]},
+                    step=epoch  # Use the epoch number as the logging step
+                )
 
-        logging.info("Training finished.")
-        if self.accelerator.is_main_process:
-            self.save("final")
+            if self.accelerator.is_main_process and (epoch + 1) % self.save_interval_epochs == 0:
+                self.save(epoch)
 
     def run_step(self, batch, cond=None):
         self.model.train()
@@ -207,6 +222,8 @@ class TrainLoop:
             loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
             loss = loss.mean()
 
+        self.accelerator.backward(loss)
+
         # Calculate and log gradient norm
         if self.accelerator.is_main_process and self.step % self.log_interval == 0:
             with torch.no_grad():
@@ -216,24 +233,22 @@ class TrainLoop:
                     if p.grad is not None:
                         grad_norm += p.grad.data.norm(2).item() ** 2
                 grad_norm = grad_norm**0.5
-                self.accelerator.log({"train/grad_norm": grad_norm, "step": self.step})
+                self.accelerator.log({"train/grad_norm": grad_norm, "train/step_loss": loss.item()}, step=self.step)
 
-        self.accelerator.backward(loss)
         self.opt.step()
 
         # Update EMA model
         update_ema(self.ema_model, self.accelerator.unwrap_model(self.model), decay=self.ema_rate)
 
-        # Log loss
-        self.accelerator.log({"loss": loss.item()}, step=self.step)
+        return loss.item()
 
-
-    def log_step(self, loss_dict, progress_bar):
-        if self.accelerator.is_main_process:
-            progress_bar.set_postfix(loss_dict)
-            for k, v in loss_dict.items():
-                self.accelerator.log({f"train/{k}": v, "step": self.step, "epoch": self.scheduler.last_epoch})
-            self.accelerator.log({"train/lr": self.scheduler.get_last_lr()[0], "step": self.step})
+    # def log_step(self, loss_dict, progress_bar, epoch): # MODIFIED: Add epoch
+    #     if self.accelerator.is_main_process:
+    #         progress_bar.set_postfix(loss_dict)
+    #         for k, v in loss_dict.items():
+    #             # MODIFIED: Use the passed epoch variable
+    #             self.accelerator.log({f"train/{k}": v, "step": self.step, "epoch": epoch})
+    #         self.accelerator.log({"train/lr": self.scheduler.get_last_lr()[0], "step": self.step})
 
 
     def save(self, epoch_label):

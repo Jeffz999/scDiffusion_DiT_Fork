@@ -44,9 +44,9 @@ def load_data(
     deterministic=False,
     train_vae=False,
     hidden_dim=128,
-):
+) -> DataLoader:
     """
-    For a dataset, create a generator over (cells, kwargs) pairs.
+    For a dataset, create a Dataloader over (cells, kwargs) pairs.
 
     :param data_dir: a dataset directory.
     :param batch_size: the batch size of each returned pair.
@@ -99,8 +99,9 @@ def load_data(
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
         )
-    while True:
-        yield from loader
+    # while True:
+    #     yield from loader
+    return loader
 
 
 class CellDataset(Dataset):

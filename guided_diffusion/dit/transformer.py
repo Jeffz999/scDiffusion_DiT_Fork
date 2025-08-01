@@ -173,6 +173,16 @@ class Attention(nn.Module):
         self.k_norm = nn.RMSNorm(self.head_dim, eps=eps, elementwise_affine=True)
 
     def forward(self, x):
+        """
+        Forward pass of Attention.
+
+        Input:
+        x: (B, L, C) tensor of batch, length, hidden size
+        
+        output:
+        x, q_mag, k_mag, attn_mag
+
+        """
         B, L, C = x.shape
         # 1. Project to Q, K, V
         qkv = self.qkv(x)
@@ -202,7 +212,13 @@ class Attention(nn.Module):
         # 7. Final projection
         x = self.proj(x)
 
-        return x
+        with torch.no_grad():
+            q_mag = torch.linalg.vector_norm(q, dim=-1).mean().detach()
+            k_mag = torch.linalg.vector_norm(k, dim=-1).mean().detach()
+            attn_mag = torch.linalg.vector_norm(x, dim=-1).mean().detach()
+
+        return x, q_mag, k_mag, attn_mag
+
 
 
 class DiTBlock(nn.Module):
@@ -227,8 +243,9 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
 
         # Attention block with modulation
+        # --- MODIFIED: Capture attention magnitudes ---
         modulated_input = modulate(self.norm1(x), shift_msa, scale_msa)
-        attn_output = self.attn(modulated_input)
+        attn_output, q_mag, k_mag, attn_mag = self.attn(modulated_input)
         x = x + gate_msa.unsqueeze(1) * attn_output
 
         # MLP block with modulation
@@ -236,7 +253,7 @@ class DiTBlock(nn.Module):
         mlp_output = self.mlp(modulated_mlp_input)
         x = x + gate_mlp.unsqueeze(1) * mlp_output
 
-        return x
+        return x, q_mag, k_mag, attn_mag
 
 
 class FinalLayer(nn.Module):
@@ -294,6 +311,14 @@ class DiT(nn.Module):
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
+
+        # Logging: Define blocks to log and a dictionary to store logs ---
+        self.blocks_to_log = {
+            'first': 0,
+            'middle': (depth - 1) // 2,
+            'final': depth - 1
+        }
+        self.monitoring_logs = {}
 
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
@@ -366,8 +391,17 @@ class DiT(nn.Module):
         else:
             c = t
 
+        self.monitoring_logs.clear()
+        
         for i, block in enumerate(self.blocks):
-            x = block(x, c)
+            x_out, q_mag, k_mag, attn_mag = block(x, c)
+            x = x_out # Update x for the next block
+
+            if i in self.blocks_to_log.values():
+                block_name = [name for name, index in self.blocks_to_log.items() if index == i][0]
+                self.monitoring_logs[f'attention/{block_name}_q_mag'] = q_mag
+                self.monitoring_logs[f'attention/{block_name}_k_mag'] = k_mag
+                self.monitoring_logs[f'attention/{block_name}_output_mag'] = attn_mag
 
         x = self.final_layer(x, c)
         x = self.unpatchify(x)

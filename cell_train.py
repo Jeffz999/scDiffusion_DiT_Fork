@@ -17,6 +17,7 @@ from guided_diffusion.train_util2 import TrainLoop
 import torch
 import numpy as np
 import random
+from torch.utils.data import DataLoader
 
 def main():
     """
@@ -36,7 +37,7 @@ def main():
 
 
     logger.log("creating data loader...")
-    data = load_data(
+    data: DataLoader = load_data(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         vae_path=args.vae_path,
@@ -52,7 +53,7 @@ def main():
         lr=args.lr,
         ema_rate=args.ema_rate,
         log_interval=args.log_interval,
-        save_interval=args.save_interval,
+        save_interval_epochs=args.save_interval_epochs,
         resume_checkpoint=args.resume_checkpoint,
         mixed_precision_type=args.mixed_precision_type,
         weight_decay=args.weight_decay,
@@ -74,8 +75,8 @@ def create_argparser():
         lr_anneal_epochs=1200,
         batch_size=128,
         ema_rate=0.9999,
-        log_interval=100,
-        save_interval=200,
+        log_interval=50,
+        save_interval_epochs=200,
         resume_checkpoint="",
         mixed_precision_type="bf16",
         vae_path='output/AE_checkpoint/muris_AE/model_seed=0_step=199999.pt',
