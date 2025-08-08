@@ -70,12 +70,12 @@ def create_argparser():
     """
     defaults = dict(
         data_dir="data/tabula_muris/all.h5ad",
-        lr=1e-4,
-        weight_decay=0.0001,
-        lr_anneal_epochs=1200,
-        batch_size=128,
+        lr=5e-5,
+        weight_decay=0.00001,
+        lr_anneal_epochs=400,
+        batch_size=256,
         ema_rate=0.9999,
-        log_interval=25,
+        log_interval=50,
         save_interval_epochs=200,
         resume_checkpoint="",
         mixed_precision_type="bf16",

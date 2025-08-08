@@ -84,9 +84,9 @@ class DiffusionGene:
                 timestep_batch = torch.full((n,), t, device=self.device, dtype=torch.long)
                 # Use CFG if scale is greater than 1.0
                 if cfg_scale > 1.0:
-                    predicted_noise = self.model.forward_with_cfg(x, timestep_batch, y=y, cfg_scale=cfg_scale)
+                    predicted_noise = model.forward_with_cfg(x, timestep_batch, y=y, cfg_scale=cfg_scale)
                 else:
-                    predicted_noise = self.model(x, timestep_batch, y=y)
+                    predicted_noise = model(x, timestep_batch, y=y)
                 #x = self.scheduler.step(predicted_noise, t, x, eta=eta).prev_sample
                 x = self.scheduler.step(predicted_noise, t, x).prev_sample
         
@@ -97,7 +97,7 @@ class DiffusionGene:
         model.train()
         return x.cpu()
     
-    def get_velocity(self, sample: torch.Tensor, noise: torch.Tensor, timesteps: torch.IntTensor) -> torch.Tensor:
+    def get_velocity(self, sample: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         # adapted from https://github.com/huggingface/diffusers/blob/v0.34.0/src/diffusers/schedulers/scheduling_ddpm.py#L129
         # Make sure alphas_cumprod and timestep have same device and dtype as sample
         alphas_cumprod = self.scheduler.alphas_cumprod.to(sample.device)

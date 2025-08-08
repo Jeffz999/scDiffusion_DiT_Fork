@@ -96,7 +96,7 @@ class TrainLoop:
         self.opt: torch.optim.Optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         
         # Using CosineAnnealingLR from dit/train.py
-        self.scheduler: torch.optim.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        self.scheduler: torch.optim.lr_scheduler.CosineAnnealingLR = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.opt, T_max=self.lr_anneal_epochs, eta_min=self.lr * SCHEDULER_MIN_MULTIPLIER
         )
 
@@ -161,7 +161,7 @@ class TrainLoop:
             if self.accelerator.is_main_process and (epoch + 1) % self.save_interval_epochs == 0:
                 self.save(epoch)
 
-    def run_step(self, batch, cond=None):
+    def run_step(self, batch, cond:dict[str, torch.Tensor] | None=None):
         self.model.train()
         self.opt.zero_grad()
         
@@ -184,7 +184,7 @@ class TrainLoop:
 
         x_t, noise = self.diffusion.noise_genes(batch, t)
         
-        scheduler_pred_type = self.schedule_sampler.config.prediction_type
+        scheduler_pred_type = self.schedule_sampler.config.get("prediction_type")
         # ------------------ V-Prediction Target Calculation ------------------ #
         # Calculate the appropriate target for the loss function based on the prediction type.
         if scheduler_pred_type == "epsilon":
@@ -193,14 +193,13 @@ class TrainLoop:
             target = self.diffusion.get_velocity(batch, noise, t)
         else:
             raise ValueError(f"Unknown prediction type {scheduler_pred_type}")
-        
-        y = cond.get("y")
-        if y is not None:
-            y = y.to(self.accelerator.device)
-        
+
         if cond is None:
             predicted_noise = self.model(x_t, t)
         else:
+            y = cond.get("y")
+            if y is not None:
+                y = y.to(self.accelerator.device)
             predicted_noise = self.model(x_t, t, y) 
 
         # code from https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
@@ -236,6 +235,9 @@ class TrainLoop:
                         grad_norm += p.grad.data.norm(2).item() ** 2
                 grad_norm = grad_norm**0.5
                 self.accelerator.log({"train/grad_norm": grad_norm, "train/step_loss": loss.item()}, step=self.step)
+
+                if hasattr(unwrapped_model, 'monitoring_logs') and unwrapped_model.monitoring_logs:
+                    self.accelerator.log(unwrapped_model.monitoring_logs, step=self.step)
 
         self.opt.step()
 
